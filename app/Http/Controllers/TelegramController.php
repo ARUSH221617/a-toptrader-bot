@@ -10,7 +10,9 @@ use App\Models\Transaction;
 use App\Models\DynamicContent;
 use App\Models\DynamicButton;
 use App\Models\Messages;
+use App\Models\TgSession as Sessions;
 use Telegram\Bot\Keyboard\Keyboard;
+use Illuminate\Support\Facades\Log;
 
 class TelegramController extends Controller
 {
@@ -50,7 +52,9 @@ class TelegramController extends Controller
 
     protected function handleStartCommand($chatId, $userId)
     {
-        $this->createUserIfNotExists($chatId, $userId);
+        $register = $this->createUserIfNotExists($chatId, $userId);
+        if (!$register)
+            return;
         $keyboard = $this->getMainMenuKeyboard($chatId);
         $this->telegram->sendMessage([
             'chat_id' => $chatId,
@@ -61,8 +65,8 @@ class TelegramController extends Controller
 
     protected function handleMessage($chatId, $text, $userId)
     {
-        $command = $this->step() != 'default' ? $this->step() : $text;
-        $content = $this->step() != 'default' ? $text : '';
+        $command = $this->step('', $chatId) != 'default' ? $this->step('', $chatId) : $text;
+        $content = $this->step('', $chatId) != 'default' ? $text : '';
         switch (true) {
             case str_contains($command, '/referral'):
                 $this->handleReferral($chatId, $userId);
@@ -83,7 +87,7 @@ class TelegramController extends Controller
             default:
                 $this->telegram->sendMessage([
                     'chat_id' => $chatId,
-                    'text' => 'متوجه پیام شما نشدم. لطفا از منو استفاده کنید.',
+                    'text' => "متوجه پیام شما نشدم. لطفا از منو استفاده کنید.\ncommand: {$command}\n{$this->step('', $chatId)}",
                 ]);
                 break;
         }
@@ -91,8 +95,8 @@ class TelegramController extends Controller
 
     protected function handleCallbackQuery($chatId, $data, $userId)
     {
-        $command = $this->step() != 'default' ? $this->step() : $data;
-        $content = $this->step() != 'default' ? $data : '';
+        $command = $this->step('', $chatId) != 'default' ? $this->step('', $chatId) : $data;
+        $content = $this->step('', $chatId) != 'default' ? $data : '';
         switch (true) {
             case $command === 'deposit':
                 $this->handleDeposit($chatId, $userId);
@@ -142,7 +146,7 @@ class TelegramController extends Controller
             'chat_id' => $chatId,
             'text' => 'لطفا مبلغ واریزی خود را به همراه شناسه پرداخت ارسال کنید.',
         ]);
-        $this->step('deposit');
+        $this->step('deposit', $chatId);
     }
     protected function handleDepositGet($chatId, $userId, $content)
     {
@@ -161,7 +165,7 @@ class TelegramController extends Controller
                 'chat_id' => $chatId,
                 'text' => Options::get('transaction_deposit_pending_message[user]'),
             ]);
-            $this->step('default');
+            $this->step('default', $chatId);
             $this->handleStartCommand($chatId, $userId);
         } else {
             $this->telegram->sendMessage([
@@ -223,7 +227,7 @@ class TelegramController extends Controller
                 'text' => 'نوع محتوای ارسال شده پشتیبانی نمی‌شود.',
             ]);
         }
-        $this->step('default');
+        $this->step('default', $chatId);
         $keyboard = [
             [
                 ['text' => 'ادامه', 'callback_data' => 'broadcasting'],
@@ -288,7 +292,7 @@ class TelegramController extends Controller
             'chat_id' => $chatId,
             'text' => 'لطفا مبلغ برداشت خود را به همراه شماره حساب ارسال کنید.',
         ]);
-        $this->step('withdraw');
+        $this->step('withdraw', $chatId);
     }
 
     protected function handleReferral($chatId, $userId)
@@ -314,7 +318,7 @@ class TelegramController extends Controller
             'chat_id' => $chatId,
             'text' => 'لطفا پیام خود را ارسال کنید تا پشتیبانی در اسرع وقت پاسخ دهد.',
         ]);
-        $this->step('support');
+        $this->step('support', $chatId);
     }
 
     protected function handleDynamicContent($chatId, $key)
@@ -356,7 +360,7 @@ class TelegramController extends Controller
             'chat_id' => $chatId,
             'text' => 'لطفا پیام مورد نظر برای ارسال همگانی را ارسال کنید:',
         ]);
-        $this->step('broadcasting');
+        $this->step('broadcasting', $chatId);
     }
 
     protected function isAdmin($chatId)
@@ -493,7 +497,9 @@ class TelegramController extends Controller
 
     protected function createUserIfNotExists($chatId, $userId)
     {
-        $user = User::find($userId);
+        $session = Sessions::where(['key' => 'user_session', 'value' => $chatId])->first();
+        $user = $session ? $session->user_id : null;
+
         if (!$user) {
             $keyboard = [
                 [
@@ -505,8 +511,10 @@ class TelegramController extends Controller
                 'text' => 'لطفا برای استفاده از ربات، شماره موبایل خود را با استفاده از دکمه زیر ارسال کنید.',
                 'reply_markup' => new Keyboard(['keyboard' => $keyboard, 'resize_keyboard' => true, 'one_time_keyboard' => true])
             ]);
-            $this->step('get_contact_for_login');
+            $this->step('get_contact_for_login', $chatId);
+            return false;
         }
+        return true;
     }
 
     protected function handleGetContactForLogin($chatId, $userId, $content)
@@ -515,16 +523,23 @@ class TelegramController extends Controller
             $phoneNumber = $content['contact']['phone_number'];
 
             $user = User::firstOrCreate(
-                    ['mobile' => $phoneNumber],
-                    [
-                        'name' => $content['contact']['first_name'] ?? '',
-                        'mobile' => $phoneNumber,
-                        'mobile_verified_at' => now(),
-                        'password' => bcrypt($userId)
-                    ]
-                );
+                ['mobile' => $phoneNumber],
+                [
+                    'name' => $content['contact']['first_name'] ?? '',
+                    'mobile' => $phoneNumber,
+                    'mobile_verified_at' => now(),
+                    'password' => bcrypt($userId)
+                ]
+            );
 
-            session(['user' => $user, 'chatId' => $chatId, 'userId' => $userId]);
+            Sessions::updateOrCreate(
+                ['key' => 'user_session', 'user_id' => $user],
+                ['value' => $chatId, 'user_id' => $user]
+            );
+            Sessions::updateOrCreate(
+                ['key' => 'user_tg_id', 'user_id' => $user],
+                ['value' => $userId, 'user_id' => $user]
+            );
 
             if ($user->wasRecentlyCreated) {
                 $this->telegram->sendMessage([
@@ -533,7 +548,7 @@ class TelegramController extends Controller
                 ]);
             }
 
-            $this->step('default');
+            $this->step('default', $chatId);
             $this->handleStartCommand($chatId, $userId);
         } else {
             $this->telegram->sendMessage([
@@ -543,12 +558,19 @@ class TelegramController extends Controller
         }
     }
 
-    public function step(string|null $step = ''): string
+    public function step(?string $step = '', ?string $chatId): string
     {
+        $session = Sessions::where(['key' => 'user_session', 'value' => $chatId])->first();
+        $userId = $session->user_id ?? null;
+        $key = ['key' => 'step', 'user_id' => $userId];
+
         if (empty($step)) {
-            return session('step', 'default');
-        } else {
-            return session(['step' => $step == 'default' ? '' : $step]);
+            return Sessions::where($key)->value('value') ?? 'default';
         }
+
+        $value = $step === 'default' ? '' : $step;
+        $session = Sessions::updateOrCreate($key, ['value' => $value, 'chat_id' => $chatId]);
+
+        return $session->value;
     }
 }
