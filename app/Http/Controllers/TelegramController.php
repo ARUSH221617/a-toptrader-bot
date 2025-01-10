@@ -24,21 +24,35 @@ class TelegramController extends Controller
     {
         $this->adminChatId = explode(',', Options::where('key', 'admins')->value('data'));
         $this->telegram = $telegram;
+        Log::debug('TelegramController initialized with adminChatId: ' . json_encode($this->adminChatId));
     }
 
     public function webhook(Request $request)
     {
         try {
             $update = $this->telegram->getWebhookUpdates();
+            if ($update == null || empty($update)) {
+                return response('test', 200);
+            }
+            Log::debug('Received webhook update: ' . json_encode($update->getRawData()));
+            file_put_contents('telegram_webhook_log.txt', json_encode($update->getRawData()) . "\n", FILE_APPEND);
 
             if ($update->isType('message')) {
+                Log::debug('Processing message update');
                 $this->processUpdate($update->getMessage(), 'message');
             } elseif ($update->isType('callback_query')) {
+                Log::debug('Processing callback query update');
                 $this->processUpdate($update->getCallbackQuery(), 'callback_query');
             }
             return response('ok', Response::HTTP_OK);
+        } catch (\Telegram\Bot\Exceptions\TelegramSDKException $e) {
+            Log::error('Telegram SDK Error in webhook: ' . $e->getMessage());
+            return response('Service Unavailable', Response::HTTP_SERVICE_UNAVAILABLE);
+        } catch (\Illuminate\Database\QueryException $e) {
+            Log::error('Database Query Error in webhook: ' . $e->getMessage());
+            return response('Service Unavailable', Response::HTTP_SERVICE_UNAVAILABLE);
         } catch (\Exception $e) {
-            Log::error('Error in webhook: ' . $e->getMessage());
+            Log::error('General Error in webhook: ' . $e->getMessage());
             return response('Service Unavailable', Response::HTTP_SERVICE_UNAVAILABLE);
         }
     }

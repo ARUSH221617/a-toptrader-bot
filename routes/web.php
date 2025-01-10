@@ -6,16 +6,22 @@ use App\Http\Controllers\TelegramController;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 
-Route::get('/', function () {
-    return view('welcome');
-});
-
+// Route::get('/', function () {
+//     return view('welcome');
+// });
+Log::info("route is working");
 Route::post('/telegram/webhook', [TelegramController::class, 'webhook'])
-    ->name('telegram.webhook')->withoutMiddleware([
-        \App\Http\Middleware\VerifyCsrfToken::class,
-        \Illuminate\Foundation\Http\Middleware\VerifyCsrfToken::class
-    ]);
+    ->name('telegram.webhook')
+    ->withoutMiddleware([\Illuminate\Foundation\Http\Middleware\VerifyCsrfToken::class]);
+
+// Route::post('/telegram/webhook', function () {
+//     echo "hi";
+// })->name('telegram.webhook')->withoutMiddleware([
+//             \App\Http\Middleware\VerifyCsrfToken::class,
+//             \Illuminate\Foundation\Http\Middleware\VerifyCsrfToken::class
+//         ]);
 
 Route::get('telegram/app/admin', [AdminMiniAppController::class, 'render'])->name('telegram.mini_app.admin');
 
