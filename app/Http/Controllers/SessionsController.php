@@ -2,7 +2,7 @@
 
 namespace App\Http\Controllers;
 
-use App\Models\Sessions;
+use App\Models\TgSession as Sessions;
 use Illuminate\Http\Request;
 
 class SessionsController extends Controller

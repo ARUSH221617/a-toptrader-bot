@@ -13,131 +13,118 @@ use App\Models\Messages;
 use App\Models\TgSession as Sessions;
 use Telegram\Bot\Keyboard\Keyboard;
 use Illuminate\Support\Facades\Log;
+use Symfony\Component\HttpFoundation\Response;
 
 class TelegramController extends Controller
 {
     protected Api $telegram;
-    protected array|null $adminChatId;
+    protected ?array $adminChatId;
 
     public function __construct(Api $telegram)
     {
-        $this->adminChatId = explode(',', env('TELEGRAM_ADMIN_CHAT_ID', ''));
+        $this->adminChatId = explode(',', Options::where('key', 'admins')->value('data'));
         $this->telegram = $telegram;
     }
 
     public function webhook(Request $request)
     {
-        $update = $this->telegram->getWebhookUpdates();
+        try {
+            $update = $this->telegram->getWebhookUpdates();
 
-        if ($update->isType('message')) {
-            $message = $update->getMessage();
-            $chatId = $message->getChat()->getId();
-            $text = $message->getText();
-            $userId = $message->getFrom()->getId();
-
-            if ($text == '/start') {
-                $this->handleStartCommand($chatId, $userId);
-            } else {
-                $this->handleMessage($chatId, $text, $userId);
+            if ($update->isType('message')) {
+                $this->processUpdate($update->getMessage(), 'message');
+            } elseif ($update->isType('callback_query')) {
+                $this->processUpdate($update->getCallbackQuery(), 'callback_query');
             }
-        } elseif ($update->isType('callback_query')) {
-            $callbackQuery = $update->getCallbackQuery();
-            $data = $callbackQuery->getData();
-            $chatId = $callbackQuery->getMessage()->getChat()->getId();
-            $userId = $callbackQuery->getFrom()->getId();
-            $this->handleCallbackQuery($chatId, $data, $userId);
+            return response('ok', Response::HTTP_OK);
+        } catch (\Exception $e) {
+            Log::error('Error in webhook: ' . $e->getMessage());
+            return response('Service Unavailable', Response::HTTP_SERVICE_UNAVAILABLE);
         }
-        return 'ok';
     }
 
-    protected function handleStartCommand($chatId, $userId)
+    protected function processUpdate($update, $type)
     {
-        $register = $this->createUserIfNotExists($chatId, $userId);
-        if (!$register)
-            return;
-        $keyboard = $this->getMainMenuKeyboard($chatId);
+        try {
+            $chat = $update->getChat();
+            $from = $update->getFrom();
+
+            if (is_null($chat) || is_null($from)) {
+                throw new \Exception('Chat or From object is null');
+            }
+
+            $chatId = $chat->getId();
+            $userId = $from->getId();
+
+            if ($type === 'message') {
+                $text = $update->getText();
+                $this->handleCommand($chatId, $text, $userId);
+            } elseif ($type === 'callback_query') {
+                $data = $update->getData();
+                $this->handleCommand($chatId, $data, $userId);
+            }
+        } catch (\Exception $e) {
+            Log::error('Error processing update: ' . $e->getMessage());
+        }
+    }
+
+    protected function handleCommand($chatId, $input, $userId)
+    {
+        $command = $this->getCommand($chatId, $input);
+        $content = $this->getContent($chatId, $input);
+
+        $commandHandlers = [
+            '/start' => fn() => $this->handleStartCommand($chatId, $userId),
+            '/referral' => fn() => $this->handleReferral($chatId, $userId),
+            'referral' => fn() => $this->handleReferral($chatId, $userId),
+            '/support' => fn() => $this->handleSupport($chatId, $userId),
+            'support' => fn() => $this->handleSupport($chatId, $userId),
+            'deposit_get_transaction' => fn() => $this->handleDepositGet($chatId, $userId, $content),
+            'broadcasting' => fn() => $this->handleBroadCastingGet($chatId, $userId, $content),
+            'get_contact_for_login' => fn() => $this->handleGetContactForLogin($chatId, $userId, $content),
+            'deposit' => fn() => $this->handleDeposit($chatId, $userId),
+            'withdraw' => fn() => $this->handleWithdraw($chatId, $userId),
+            'back_to_main' => fn() => $this->handleStartCommand($chatId, $userId),
+            'broadcast' => fn() => $this->handleBroadcast($chatId),
+            'send_broadcasting' => fn() => $this->handleBroadCastingSend($chatId),
+        ];
+
+        foreach ($commandHandlers as $key => $handler) {
+            if (str_contains($command, $key) || $command === $key) {
+                $handler();
+                return;
+            }
+        }
+
+        if (strpos($command, 'confirm_deposit_') === 0) {
+            $this->confirmDeposit($chatId, str_replace('confirm_deposit_', '', $command), $userId);
+        } elseif (strpos($command, 'reject_deposit_') === 0) {
+            $this->rejectDeposit($chatId, str_replace('reject_deposit_', '', $command), $userId);
+        } elseif (strpos($command, 'confirm_withdraw_') === 0) {
+            $this->confirmWithdraw($chatId, str_replace('confirm_withdraw_', '', $command), $userId);
+        } elseif (strpos($command, 'reject_withdraw_') === 0) {
+            $this->rejectWithdraw($chatId, str_replace('reject_withdraw_', '', $command), $userId);
+        } else {
+            $this->handleDynamicContent($chatId, $command);
+        }
+    }
+
+    protected function getCommand($chatId, $input)
+    {
+        return !empty($this->step(chatId: $chatId)) || $this->step(chatId: $chatId) != 'default' ? $this->step(chatId: $chatId) : $input;
+    }
+
+    protected function getContent($chatId, $input)
+    {
+        return !empty($this->step(chatId: $chatId)) || $this->step(chatId: $chatId) != 'default' ? $input : '';
+    }
+
+    protected function sendUnknownCommandMessage($chatId, $command)
+    {
         $this->telegram->sendMessage([
             'chat_id' => $chatId,
-            'text' => 'به ربات خوش آمدید! لطفا از منوی زیر انتخاب کنید:',
-            'reply_markup' => $keyboard,
+            'text' => "متوجه پیام شما نشدم. لطفا از منو استفاده کنید.\ncommand: {$command}\n{$this->step('', $chatId)}",
         ]);
-    }
-
-    protected function handleMessage($chatId, $text, $userId)
-    {
-        $command = $this->step('', $chatId) != 'default' ? $this->step('', $chatId) : $text;
-        $content = $this->step('', $chatId) != 'default' ? $text : '';
-        switch (true) {
-            case str_contains($command, '/referral'):
-                $this->handleReferral($chatId, $userId);
-                break;
-            case str_contains($command, '/support'):
-                $this->handleSupport($chatId, $userId);
-                break;
-            case str_contains($command, 'deposit'):
-            case $command === 'deposit':
-                $this->handleDepositGet($chatId, $userId, $content);
-                break;
-            case $command === 'broadcasting':
-                $this->handleBroadCastingGet($chatId, $userId, $content);
-                break;
-            case $command === 'get_contact_for_login':
-                $this->handleGetContactForLogin($chatId, $userId, $content);
-                break;
-            default:
-                $this->telegram->sendMessage([
-                    'chat_id' => $chatId,
-                    'text' => "متوجه پیام شما نشدم. لطفا از منو استفاده کنید.\ncommand: {$command}\n{$this->step('', $chatId)}",
-                ]);
-                break;
-        }
-    }
-
-    protected function handleCallbackQuery($chatId, $data, $userId)
-    {
-        $command = $this->step('', $chatId) != 'default' ? $this->step('', $chatId) : $data;
-        $content = $this->step('', $chatId) != 'default' ? $data : '';
-        switch (true) {
-            case $command === 'deposit':
-                $this->handleDeposit($chatId, $userId);
-                break;
-            case $command === 'withdraw':
-                $this->handleWithdraw($chatId, $userId);
-                break;
-            case $command === 'referral':
-                $this->handleReferral($chatId, $userId);
-                break;
-            case $command === 'support':
-                $this->handleSupport($chatId, $userId);
-                break;
-            case $command === 'back_to_main':
-                $this->handleStartCommand($chatId, $userId);
-                break;
-            case $command === 'broadcast':
-                $this->handleBroadcast($chatId);
-                break;
-            case $command === 'send_broadcasting':
-                $this->handleBroadCastingSend($chatId);
-                break;
-            case strpos($command, 'confirm_deposit_') === 0:
-                $depositId = str_replace('confirm_deposit_', '', $command);
-                $this->confirmDeposit($chatId, $depositId, $userId);
-                break;
-            case strpos($command, 'reject_deposit_') === 0:
-                $depositId = str_replace('reject_deposit_', '', $command);
-                $this->rejectDeposit($chatId, $depositId, $userId);
-                break;
-            case strpos($command, 'confirm_withdraw_') === 0:
-                $withdrawId = str_replace('confirm_withdraw_', '', $command);
-                $this->confirmWithdraw($chatId, $withdrawId, $userId);
-                break;
-            case strpos($command, 'reject_withdraw_') === 0:
-                $withdrawId = str_replace('reject_withdraw_', '', $command);
-                $this->rejectWithdraw($chatId, $withdrawId, $userId);
-                break;
-            default:
-                $this->handleDynamicContent($chatId, $command);
-        }
     }
 
     protected function handleDeposit($chatId, $userId)
@@ -146,88 +133,88 @@ class TelegramController extends Controller
             'chat_id' => $chatId,
             'text' => 'لطفا مبلغ واریزی خود را به همراه شناسه پرداخت ارسال کنید.',
         ]);
-        $this->step('deposit', $chatId);
+        $this->step('deposit_get_transaction', $chatId);
     }
+
+    protected function handleStartCommand($chatId, $userId)
+    {
+        if (!$this->createUserIfNotExists($chatId, $userId)) {
+            return;
+        }
+        $keyboard = $this->getMainMenuKeyboard($chatId);
+        $this->telegram->sendMessage([
+            'chat_id' => $chatId,
+            'text' => 'به ربات خوش آمدید! لطفا از منوی زیر انتخاب کنید:',
+            'reply_markup' => $keyboard,
+        ]);
+    }
+
     protected function handleDepositGet($chatId, $userId, $content)
     {
-        preg_match('/(\d+)\n+(.+)/', $content, $matches);
-        if (!empty($matches)) {
-            $amount = $matches[1];
-            $paymentId = trim($matches[2]);
-            $this->telegram->sendMessage([
-                'chat_id' => Options::get('transaction_channel'),
-                'text' => vprintf(Options::get('transaction_deposit_status_message[admin]'), [
-                    $amount,
-                    $paymentId
-                ]),
-            ]);
-            $this->telegram->sendMessage([
-                'chat_id' => $chatId,
-                'text' => Options::get('transaction_deposit_pending_message[user]'),
-            ]);
+        if (preg_match('/(\d+)\n+(.+)/', $content, $matches)) {
+            $this->processDeposit($chatId, $matches[1], trim($matches[2]));
             $this->step('default', $chatId);
             $this->handleStartCommand($chatId, $userId);
         } else {
-            $this->telegram->sendMessage([
-                'chat_id' => $chatId,
-                'text' => 'فرمت ورودی نادرست است. لطفا دوباره تلاش کنید. مثال: 1000\n1234567890. برای کمک بیشتر، با پشتیبانی تماس بگیرید.',
-            ]);
+            $this->sendInvalidFormatMessage($chatId);
         }
     }
 
+    protected function processDeposit($chatId, $amount, $paymentId)
+    {
+        $this->telegram->sendMessage([
+            'chat_id' => Options::get('transaction_channel'),
+            'text' => vprintf(Options::get('transaction_deposit_status_message[admin]'), [$amount, $paymentId]),
+        ]);
+        $this->telegram->sendMessage([
+            'chat_id' => $chatId,
+            'text' => Options::get('transaction_deposit_pending_message[user]'),
+        ]);
+    }
+
+    protected function sendInvalidFormatMessage($chatId)
+    {
+        $this->telegram->sendMessage([
+            'chat_id' => $chatId,
+            'text' => 'فرمت ورودی نادرست است. لطفا دوباره تلاش کنید. مثال: 1000\n1234567890. برای کمک بیشتر، با پشتیبانی تماس بگیرید.',
+        ]);
+    }
 
     protected function handleBroadCastingGet($chatId, $userId, $content)
     {
         if (is_string($content)) {
-            Messages::create([
-                'section' => 'broadcasting',
-                'status' => 'pending',
-                'type' => 'text',
-                'data' => '',
-                'content' => $content,
-            ]);
+            $this->createBroadcastMessage('text', '', $content);
         } elseif (is_array($content) && isset($content['type'])) {
-            switch ($content['type']) {
-                case 'image':
-                    Messages::create([
-                        'section' => 'broadcasting',
-                        'status' => 'pending',
-                        'type' => 'image',
-                        'data' => $content['data'],
-                        'content' => $content['caption'] ?? '',
-                    ]);
-                    break;
-                case 'video':
-                    Messages::create([
-                        'section' => 'broadcasting',
-                        'status' => 'pending',
-                        'type' => 'video',
-                        'data' => $content['data'],
-                        'content' => $content['caption'] ?? '',
-                    ]);
-                    break;
-                case 'audio':
-                    Messages::create([
-                        'section' => 'broadcasting',
-                        'status' => 'pending',
-                        'type' => 'audio',
-                        'data' => $content['data'],
-                        'content' => $content['caption'] ?? '',
-                    ]);
-                    break;
-                default:
-                    return $this->telegram->sendMessage([
-                        'chat_id' => $chatId,
-                        'text' => 'نوع محتوای ارسال شده پشتیبانی نمی‌شود.',
-                    ]);
-            }
+            $this->createBroadcastMessage($content['type'], $content['data'], $content['caption'] ?? '');
         } else {
-            return $this->telegram->sendMessage([
-                'chat_id' => $chatId,
-                'text' => 'نوع محتوای ارسال شده پشتیبانی نمی‌شود.',
-            ]);
+            $this->sendUnsupportedContentTypeMessage($chatId);
+            return;
         }
         $this->step('default', $chatId);
+        $this->sendBroadcastReceivedMessage($chatId);
+    }
+
+    protected function createBroadcastMessage($type, $data, $content)
+    {
+        Messages::create([
+            'section' => 'broadcasting',
+            'status' => 'pending',
+            'type' => $type,
+            'data' => $data,
+            'content' => $content,
+        ]);
+    }
+
+    protected function sendUnsupportedContentTypeMessage($chatId)
+    {
+        $this->telegram->sendMessage([
+            'chat_id' => $chatId,
+            'text' => 'نوع محتوای ارسال شده پشتیبانی نمی‌شود.',
+        ]);
+    }
+
+    protected function sendBroadcastReceivedMessage($chatId)
+    {
         $keyboard = [
             [
                 ['text' => 'ادامه', 'callback_data' => 'broadcasting'],
@@ -240,49 +227,57 @@ class TelegramController extends Controller
             'reply_markup' => new Keyboard(['inline_keyboard' => $keyboard])
         ]);
     }
+
     protected function handleBroadCastingSend($chatId)
     {
         $messages = Messages::where('section', 'broadcasting')->where('status', 'pending')->get();
         $users = User::all();
-        if ($messages->isNotEmpty()) {
-            foreach ($users as $user) {
-                $user_tg_id = $user->get('id');
-                foreach ($messages as $message) {
-                    switch ($message->type) {
-                        case 'image':
-                            $this->telegram->sendPhoto([
-                                'chat_id' => $user_tg_id,
-                                'photo' => $message->data,
-                                'caption' => $message->content,
-                            ]);
-                            break;
-                        case 'video':
-                            $this->telegram->sendVideo([
-                                'chat_id' => $user_tg_id,
-                                'video' => $message->data,
-                                'caption' => $message->content,
-                            ]);
-                            break;
-                        case 'audio':
-                            $this->telegram->sendAudio([
-                                'chat_id' => $user_tg_id,
-                                'audio' => $message->data,
-                                'caption' => $message->content,
-                            ]);
-                            break;
-                        default:
-                            $this->telegram->sendMessage([
-                                'chat_id' => $user_tg_id,
-                                'text' => $message->content,
-                            ]);
-                    }
-                }
-            }
-        } else {
+
+        if ($messages->isEmpty()) {
             $this->telegram->sendMessage([
                 'chat_id' => $chatId,
                 'text' => 'هیچ محتوایی برای ارسال یافت نشد.',
             ]);
+            return;
+        }
+
+        foreach ($users as $user) {
+            $userTgId = $user->get('id');
+            foreach ($messages as $message) {
+                $this->sendBroadcastMessage($userTgId, $message);
+            }
+        }
+    }
+
+    protected function sendBroadcastMessage($userTgId, $message)
+    {
+        switch ($message->type) {
+            case 'image':
+                $this->telegram->sendPhoto([
+                    'chat_id' => $userTgId,
+                    'photo' => $message->data,
+                    'caption' => $message->content,
+                ]);
+                break;
+            case 'video':
+                $this->telegram->sendVideo([
+                    'chat_id' => $userTgId,
+                    'video' => $message->data,
+                    'caption' => $message->content,
+                ]);
+                break;
+            case 'audio':
+                $this->telegram->sendAudio([
+                    'chat_id' => $userTgId,
+                    'audio' => $message->data,
+                    'caption' => $message->content,
+                ]);
+                break;
+            default:
+                $this->telegram->sendMessage([
+                    'chat_id' => $userTgId,
+                    'text' => $message->content,
+                ]);
         }
     }
 
@@ -323,34 +318,40 @@ class TelegramController extends Controller
 
     protected function handleDynamicContent($chatId, $key)
     {
-        $dynamicContents = DynamicContent::where('key', $key);
-        if ($dynamicContents) {
-            foreach ($dynamicContents as $dynamicContent) {
-                switch ($dynamicContent->type) {
-                    case 'image':
-                        $this->telegram->sendPhoto([
-                            'chat_id' => $chatId,
-                            'photo' => $dynamicContent->content,
-                        ]);
-                        break;
-                    case 'video':
-                        $this->telegram->sendVideo([
-                            'chat_id' => $chatId,
-                            'video' => $dynamicContent->content,
-                        ]);
-                        break;
-                    default:
-                        $this->telegram->sendMessage([
-                            'chat_id' => $chatId,
-                            'text' => $dynamicContent->content,
-                        ]);
-                }
-            }
-        } else {
+        $dynamicContents = DynamicContent::where('key', $key)->get();
+        if ($dynamicContents->isEmpty()) {
             $this->telegram->sendMessage([
                 'chat_id' => $chatId,
                 'text' => 'محتوایی برای این دکمه وجود ندارد.',
             ]);
+            return;
+        }
+
+        foreach ($dynamicContents as $dynamicContent) {
+            $this->sendDynamicContent($chatId, $dynamicContent);
+        }
+    }
+
+    protected function sendDynamicContent($chatId, $dynamicContent)
+    {
+        switch ($dynamicContent->type) {
+            case 'image':
+                $this->telegram->sendPhoto([
+                    'chat_id' => $chatId,
+                    'photo' => $dynamicContent->content,
+                ]);
+                break;
+            case 'video':
+                $this->telegram->sendVideo([
+                    'chat_id' => $chatId,
+                    'video' => $dynamicContent->content,
+                ]);
+                break;
+            default:
+                $this->telegram->sendMessage([
+                    'chat_id' => $chatId,
+                    'text' => $dynamicContent->content,
+                ]);
         }
     }
 
@@ -473,8 +474,8 @@ class TelegramController extends Controller
                 ['text' => 'پشتیبانی 🛠️', 'callback_data' => 'support'],
             ]
         ];
-        $dynamic_buttons = DynamicButton::where('status', 'active')->get();
-        foreach ($dynamic_buttons as $button) {
+        $dynamicButtons = DynamicButton::where('status', 'active')->get();
+        foreach ($dynamicButtons as $button) {
             $keyboard[] = [
                 ['text' => $button->value, 'callback_data' => $button->slug],
             ];
@@ -486,7 +487,7 @@ class TelegramController extends Controller
                 ['text' => 'کاربران 👤', 'callback_data' => 'show_users'],
             ];
             $keyboard[] = [
-                ['text' => 'تنظیمات ⚙️', 'callback_data' => 'settings'],
+                ['text' => 'تنظیمات ⚙️', 'web_app' => ['url' => env("TELEGRAM_MINI_APP_ADMIN_URL")]],
             ];
             $keyboard[] = [
                 ['text' => 'پخش پیام همگانی 📢', 'callback_data' => 'broadcast'],
@@ -501,44 +502,61 @@ class TelegramController extends Controller
         $user = $session ? $session->user_id : null;
 
         if (!$user) {
-            $keyboard = [
-                [
-                    ['text' => 'ارسال شماره موبایل 📱', 'request_contact' => true]
-                ]
-            ];
-            $this->telegram->sendMessage([
-                'chat_id' => $chatId,
-                'text' => 'لطفا برای استفاده از ربات، شماره موبایل خود را با استفاده از دکمه زیر ارسال کنید.',
-                'reply_markup' => new Keyboard(['keyboard' => $keyboard, 'resize_keyboard' => true, 'one_time_keyboard' => true])
-            ]);
+            $this->requestContact($chatId);
             $this->step('get_contact_for_login', $chatId);
             return false;
         }
         return true;
     }
 
+    protected function requestContact($chatId)
+    {
+        $keyboard = [
+            [
+                ['text' => 'ارسال شماره موبایل 📱', 'request_contact' => true]
+            ]
+        ];
+        $this->telegram->sendMessage([
+            'chat_id' => $chatId,
+            'text' => 'لطفا برای استفاده از ربات، شماره موبایل خود را با استفاده از دکمه زیر ارسال کنید.',
+            'reply_markup' => new Keyboard(['keyboard' => $keyboard, 'resize_keyboard' => true, 'one_time_keyboard' => true])
+        ]);
+    }
+
     protected function handleGetContactForLogin($chatId, $userId, $content)
     {
-        if (isset($content['contact']) && $content['contact']['user_id'] == $userId) {
-            $phoneNumber = $content['contact']['phone_number'];
+        if (isset($content['user_id']) && $content['user_id'] == $userId) {
+            $this->registerUser($chatId, $userId, $content);
+        } else {
+            $this->telegram->sendMessage([
+                'chat_id' => $chatId,
+                'text' => 'لطفا شماره موبایل خود را با استفاده از دکمه ارسال کنید.',
+            ]);
+        }
+    }
 
-            $user = User::firstOrCreate(
+    protected function registerUser($chatId, $userId, $content)
+    {
+        $phoneNumber = $content['phone_number'];
+
+        try {
+            $user = User::updateOrCreate(
                 ['mobile' => $phoneNumber],
                 [
-                    'name' => $content['contact']['first_name'] ?? '',
-                    'mobile' => $phoneNumber,
+                    'name' => $content['first_name'] ?? '',
                     'mobile_verified_at' => now(),
                     'password' => bcrypt($userId)
                 ]
             );
 
+            $sessionData = ['user_id' => $user->id];
             Sessions::updateOrCreate(
-                ['key' => 'user_session', 'user_id' => $user],
-                ['value' => $chatId, 'user_id' => $user]
+                ['key' => 'user_session', 'user_id' => $user->id],
+                array_merge($sessionData, ['value' => $chatId])
             );
             Sessions::updateOrCreate(
-                ['key' => 'user_tg_id', 'user_id' => $user],
-                ['value' => $userId, 'user_id' => $user]
+                ['key' => 'user_tg_id', 'user_id' => $user->id],
+                array_merge($sessionData, ['value' => $userId])
             );
 
             if ($user->wasRecentlyCreated) {
@@ -550,10 +568,11 @@ class TelegramController extends Controller
 
             $this->step('default', $chatId);
             $this->handleStartCommand($chatId, $userId);
-        } else {
+        } catch (\Exception | \PDOException $e) {
+            Log::error('Error creating user or session: ' . $e->getMessage());
             $this->telegram->sendMessage([
                 'chat_id' => $chatId,
-                'text' => 'لطفا شماره موبایل خود را با استفاده از دکمه ارسال کنید.',
+                'text' => 'خطایی در ثبت اطلاعات شما رخ داده است. لطفا دوباره تلاش کنید.',
             ]);
         }
     }

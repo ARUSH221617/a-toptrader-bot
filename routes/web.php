@@ -1,9 +1,11 @@
 <?php
 
+use App\Http\Controllers\AdminMiniAppController;
 use Illuminate\Support\Facades\Route;
 use App\Http\Controllers\TelegramController;
 use Illuminate\Support\Facades\Schema;
-use TCG\Voyager\Facades\Voyager;
+use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\DB;
 
 Route::get('/', function () {
     return view('welcome');
@@ -11,9 +13,11 @@ Route::get('/', function () {
 
 Route::post('/telegram/webhook', [TelegramController::class, 'webhook'])
     ->name('telegram.webhook')->withoutMiddleware([
-            \App\Http\Middleware\VerifyCsrfToken::class,
-            \Illuminate\Foundation\Http\Middleware\VerifyCsrfToken::class
-        ]);
+        \App\Http\Middleware\VerifyCsrfToken::class,
+        \Illuminate\Foundation\Http\Middleware\VerifyCsrfToken::class
+    ]);
+
+Route::get('telegram/app/admin', [AdminMiniAppController::class, 'render'])->name('telegram.mini_app.admin');
 
 Route::get('/set', function () {
     $botToken = env('TELEGRAM_BOT_TOKEN');
@@ -23,7 +27,7 @@ Route::get('/set', function () {
         return response()->json(['error' => 'Bot token or webhook URL is not set'], 400, [], JSON_PRETTY_PRINT);
     }
 
-    $response = \Illuminate\Support\Facades\Http::post("https://api.telegram.org/bot{$botToken}/setWebhook", [
+    $response = Http::post("https://api.telegram.org/bot{$botToken}/setWebhook", [
         'url' => $webhookUrl
     ]);
 
@@ -35,9 +39,8 @@ Route::get('/set', function () {
 })->name('telegram.set');
 
 Route::get('/info', function () {
-    // Start Generation Here
     $botToken = env('TELEGRAM_BOT_TOKEN');
-    $response = \Illuminate\Support\Facades\Http::get("https://api.telegram.org/bot{$botToken}/GetWebhookInfo");
+    $response = Http::get("https://api.telegram.org/bot{$botToken}/GetWebhookInfo");
     if ($response->successful()) {
         return response()->json($response->json(), 200, [], JSON_PRETTY_PRINT);
     } else {
@@ -45,21 +48,20 @@ Route::get('/info', function () {
     }
 })->name('telegram.info');
 
-
 Route::get('/db/{table}', function ($table) {
     if (!Schema::hasTable($table)) {
         return response()->json(['error' => 'Table not found'], 404, [], JSON_PRETTY_PRINT);
     }
 
-    $data = \Illuminate\Support\Facades\DB::table($table)->get();
+    $data = DB::table($table)->get();
     return response()->json($data, 200, [], JSON_PRETTY_PRINT);
 })->name('db.show');
 
-// Route::middleware(['auth'])->group(function () {
-//     Route::resource('dynamic-content', DynamicContentController::class);
-// });
+Route::get('/db/{table}/clear', function ($table) {
+    if (!Schema::hasTable($table)) {
+        return response()->json(['error' => 'Table not found'], 404, [], JSON_PRETTY_PRINT);
+    }
 
-
-Route::group(['prefix' => 'admin'], function () {
-    Voyager::routes();
-});
+    DB::table($table)->truncate();
+    return response()->json(['success' => 'Table rows cleared'], 200, [], JSON_PRETTY_PRINT);
+})->name('db.clear');

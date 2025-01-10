@@ -6,7 +6,7 @@ use Illuminate\Database\Eloquent\Factories\Factory;
 use App\Models\User;
 
 /**
- * @extends \Illuminate\Database\Eloquent\Factories\Factory<\App\Models\Sessions>
+ * @extends \Illuminate\Database\Eloquent\Factories\Factory<\App\Models\TgSession>
  */
 class SessionsFactory extends Factory
 {
