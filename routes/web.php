@@ -11,7 +11,7 @@ use Illuminate\Support\Facades\Log;
 // Route::get('/', function () {
 //     return view('welcome');
 // });
-Log::info("route is working");
+// Log::info("route is working");
 Route::post('/telegram/webhook', [TelegramController::class, 'webhook'])
     ->name('telegram.webhook')
     ->withoutMiddleware([\Illuminate\Foundation\Http\Middleware\VerifyCsrfToken::class]);
@@ -43,6 +43,22 @@ Route::get('/set', function () {
         return response()->json(['error' => 'Unable to set webhook'], $response->status(), [], JSON_PRETTY_PRINT);
     }
 })->name('telegram.set');
+
+Route::get('/delete', function () {
+    $botToken = env('TELEGRAM_BOT_TOKEN');
+
+    if (empty($botToken)) {
+        return response()->json(['error' => 'Bot token is not set'], 400, [], JSON_PRETTY_PRINT);
+    }
+
+    $response = Http::post("https://api.telegram.org/bot{$botToken}/deleteWebhook");
+
+    if ($response->successful()) {
+        return response()->json(['success' => 'Webhook deleted successfully'], 200, [], JSON_PRETTY_PRINT);
+    } else {
+        return response()->json(['error' => 'Unable to delete webhook'], $response->status(), [], JSON_PRETTY_PRINT);
+    }
+})->name('telegram.delete');
 
 Route::get('/info', function () {
     $botToken = env('TELEGRAM_BOT_TOKEN');
