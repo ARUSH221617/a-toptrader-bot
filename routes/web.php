@@ -7,21 +7,13 @@ use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
+use App\Http\Controllers\ProfileController;
+use Illuminate\Foundation\Application;
+use Inertia\Inertia;
 
-// Route::get('/', function () {
-//     return view('welcome');
-// });
-// Log::info("route is working");
 Route::post('/telegram/webhook', [TelegramController::class, 'webhook'])
     ->name('telegram.webhook')
     ->withoutMiddleware([\Illuminate\Foundation\Http\Middleware\VerifyCsrfToken::class]);
-
-// Route::post('/telegram/webhook', function () {
-//     echo "hi";
-// })->name('telegram.webhook')->withoutMiddleware([
-//             \App\Http\Middleware\VerifyCsrfToken::class,
-//             \Illuminate\Foundation\Http\Middleware\VerifyCsrfToken::class
-//         ]);
 
 Route::get('telegram/app/admin', [AdminMiniAppController::class, 'render'])->name('telegram.mini_app.admin');
 
@@ -87,3 +79,24 @@ Route::get('/db/{table}/clear', function ($table) {
     DB::table($table)->truncate();
     return response()->json(['success' => 'Table rows cleared'], 200, [], JSON_PRETTY_PRINT);
 })->name('db.clear');
+
+Route::get('/', function () {
+    return Inertia::render('Welcome', [
+        'canLogin' => Route::has('login'),
+        'canRegister' => Route::has('register'),
+        'laravelVersion' => Application::VERSION,
+        'phpVersion' => PHP_VERSION,
+    ]);
+});
+
+Route::get('/dashboard', function () {
+    return Inertia::render('Dashboard');
+})->middleware(['auth', 'verified'])->name('dashboard');
+
+Route::middleware('auth')->group(function () {
+    Route::get('/profile', [ProfileController::class, 'edit'])->name('profile.edit');
+    Route::patch('/profile', [ProfileController::class, 'update'])->name('profile.update');
+    Route::delete('/profile', [ProfileController::class, 'destroy'])->name('profile.destroy');
+});
+
+require __DIR__.'/auth.php';

@@ -2,12 +2,14 @@
 
 namespace App\Http\Controllers;
 
-use Illuminate\Http\Request;
+use Illuminate\Http\Client\Request;
+use Inertia\Inertia;
+use Inertia\Response;
 
 class AdminMiniAppController extends Controller
 {
-    public function render()
+    public function render(Request $request): Response
     {
-        return view('telegram.app.admin');
+        return Inertia::render('Admin/Dashboard');
     }
 }

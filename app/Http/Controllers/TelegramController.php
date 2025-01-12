@@ -82,7 +82,7 @@ class TelegramController extends Controller
             '/referral' => fn() => $this->handleReferral(),
             'referral' => fn() => $this->handleReferral(),
             '/support' => fn() => $this->handleSupport(),
-            'support' => fn() => $this->handleSupport(),
+            'support' => fn() => $this->handleSupportGet(),
             'deposit_get_transaction' => fn() => $this->handleDepositGet(),
             'broadcasting' => fn() => $this->handleBroadCastingGet(),
             'get_contact_for_login' => fn() => $this->handleGetContactForLogin(),
@@ -287,6 +287,15 @@ class TelegramController extends Controller
         $this->step('support');
     }
 
+    protected function handleSupportGet()
+    {
+        $content = self::$content;
+        $this->sendMessage($content, chatId: $this->adminChatId[0]);
+        $this->sendMessage('پیام شما با موفقیت به پشتیبانی ارسال شد.');
+        $this->step('default');
+        $this->handleStartCommand();
+    }
+
     protected function handleDynamicContent($key)
     {
         $dynamicContents = DynamicContent::where('key', $key)->get();
@@ -446,7 +455,7 @@ class TelegramController extends Controller
 
     protected function handleGetContactForLogin()
     {
-        if (isset(self::$updateData['contact']['user_id']) && self::$updateData['contact']['user_id'] == self::$userId) {
+        if (self::$update->getMessage()->getContact()) {
             $this->registerUser();
         } else {
             $this->sendMessage('لطفا شماره موبایل خود را با استفاده از دکمه ارسال کنید.');
@@ -455,13 +464,13 @@ class TelegramController extends Controller
 
     protected function registerUser()
     {
-        $phoneNumber = self::$updateData['contact']['phone_number'];
+        $phoneNumber = self::$update->getMessage()->getContact()['phone_number'];
 
         try {
             $user = User::updateOrCreate(
                 ['mobile' => $phoneNumber],
                 [
-                    'name' => self::$updateData['contact']['first_name'] ?? '',
+                    'name' => self::$update->getMessage()->getContact()['first_name'] ?? '',
                     'mobile_verified_at' => now(),
                     'password' => bcrypt(self::$userId)
                 ]

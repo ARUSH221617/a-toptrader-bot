@@ -1,0 +1,1 @@
+sshpass -p '$arush221617' ssh -t arushir@91.107.186.0 -p 22 'rm -rf abot.arush-script.ir;mkdir abot.arush-script.ir;cd abot.arush-script.ir;git clone https://github.com/ARUSH221617/a-toptrader-bot.git .;composer install;sleep 5;php artisan migrate;php artisan db:seed OptionsSeeder; bash'
